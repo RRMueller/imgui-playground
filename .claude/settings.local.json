@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dir \"C:\\repos\\imgui-playground\\trackDriveSimulator\")"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

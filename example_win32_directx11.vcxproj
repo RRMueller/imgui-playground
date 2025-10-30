@@ -210,6 +210,7 @@ xcopy /y /d "$(ProjectDir)openssl\bin\*.dll" "$(OutDir)"</Command>
     <ClInclude Include="RC40Flasher\ProductionFlasher.h" />
     <ClInclude Include="RC40Flasher\RC40Flasher.h" />
     <ClInclude Include="sudoku\sudoku.h" />
+    <ClInclude Include="trackDriveSimulator\trackDriveSimulator.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="fsc\fsc_madgwick.cpp" />
@@ -240,6 +241,7 @@ xcopy /y /d "$(ProjectDir)openssl\bin\*.dll" "$(OutDir)"</Command>
     <ClCompile Include="RC40Flasher\ProductionFlasher.cpp" />
     <ClCompile Include="RC40Flasher\RC40Flasher.cpp" />
     <ClCompile Include="sudoku\sudoku.cpp" />
+    <ClCompile Include="trackDriveSimulator\trackDriveSimulator.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="..\README.txt" />

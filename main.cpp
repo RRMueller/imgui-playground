@@ -21,6 +21,7 @@
 #include "sudoku.h" 
 #include "motionController_2D.h"
 #include "joystickHandling.h"
+#include "trackDriveSimulator\trackDriveSimulator.h"
 
 #include "RC40Flasher.h"
 #include "ProductionFlasher.h"
@@ -5150,6 +5151,7 @@ int main(int, char**)
     bool show_pcan_window = false;
     bool show_demo_window = true;
     bool show_another_window = false;
+    bool show_track_drive_sim = true;
     ImVec4 clear_color = ImVec4(0.45f, 0.45f, 0.45f, 1.00f); // gray to help match FSC theme
 
     // Main loop
@@ -5550,6 +5552,443 @@ int main(int, char**)
                 ImGui::VSliderFloat("##int", ImVec2(50, 200), &leftAbs, -100.f, 100.f);
                 ImGui::SameLine();
                 ImGui::VSliderFloat("##int", ImVec2(50, 200), &rightAbs, -100.f, 100.f);
+                ImGui::End();
+            }
+
+            // Track Drive Simulator Window
+            if (show_track_drive_sim)
+            {
+                static track_drive_sim_t track_sim;
+                static bool sim_initialized = false;
+                static bool logging_enabled = false;
+                static FILE* log_file = nullptr;
+                static int log_frame_counter = 0;
+
+                if (!sim_initialized) {
+                    track_sim_init(&track_sim);
+                    sim_initialized = true;
+                }
+
+                ImGui::SetNextWindowSize(ImVec2(1200, 700), ImGuiCond_FirstUseEver);
+                ImGui::Begin("Track Drive Simulator - PID Straight Tracking", &show_track_drive_sim);
+
+                // Update simulation
+                float dt = ImGui::GetIO().DeltaTime;
+                track_sim_update(&track_sim, dt);
+
+                // Logging for AI debugging
+                if (logging_enabled && log_file != nullptr) {
+                    // Log every frame (or could limit to every N frames)
+                    fprintf(log_file, "%d,%.3f,%.1f,%.1f,%.1f,%.1f,%.4f,%.4f,%.3f,%.3f,%.1f,%.1f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f\n",
+                        log_frame_counter++,
+                        track_sim.sim_time,
+                        track_sim.operator_input.forward_cmd,
+                        track_sim.operator_input.turn_cmd,
+                        track_sim.valve_commands.left_valve_current,
+                        track_sim.valve_commands.right_valve_current,
+                        track_sim.hydraulic.left_valve_state,
+                        track_sim.hydraulic.right_valve_state,
+                        track_sim.hydraulic.left_flow,
+                        track_sim.hydraulic.right_flow,
+                        track_sim.mechanical.left_rpm,
+                        track_sim.mechanical.right_rpm,
+                        track_sim.mechanical.left_velocity,
+                        track_sim.mechanical.right_velocity,
+                        track_sim.vehicle_sensors.heading,
+                        track_sim.pid.output,
+                        track_sim.pid.error,
+                        track_sim.pid.p_term,
+                        track_sim.pid.i_term,
+                        track_sim.pid.d_term,
+                        track_sim.hydraulic_config.left_efficiency_factor
+                    );
+                    fflush(log_file); // Flush immediately so we can read it
+                }
+
+                // Main layout: Three columns
+                ImGui::Columns(3, "main_columns", true);
+                ImGui::SetColumnWidth(0, 400);
+                ImGui::SetColumnWidth(1, 400);
+
+                // ===== COLUMN 1: OPERATOR CONTROLS =====
+                ImGui::Text("OPERATOR CONTROLS");
+                ImGui::Separator();
+
+                // Joystick input
+                ImGui::Text("Joystick Input (ISO-S Pattern)");
+                static float joy_forward = 0.0f;
+                static float joy_turn = 0.0f;
+                static bool enable_input = true;
+
+                ImGui::Checkbox("Enable (Dead-man)", &enable_input);
+
+                // Axis lock options
+                static int axis_lock = 0; // 0 = free, 1 = forward only, 2 = turn only
+                ImGui::RadioButton("Free 2D", &axis_lock, 0); ImGui::SameLine();
+                ImGui::RadioButton("Forward Only", &axis_lock, 1); ImGui::SameLine();
+                ImGui::RadioButton("Turn Only", &axis_lock, 2);
+
+                // 2D Joystick Widget
+                ImGui::Spacing();
+                ImVec2 joy_canvas_pos = ImGui::GetCursorScreenPos();
+                ImVec2 joy_canvas_size = ImVec2(200, 200);
+                ImDrawList* joy_draw_list = ImGui::GetWindowDrawList();
+
+                ImVec2 joy_center = ImVec2(joy_canvas_pos.x + joy_canvas_size.x * 0.5f,
+                                           joy_canvas_pos.y + joy_canvas_size.y * 0.5f);
+                float joy_radius = 90.0f;
+
+                // Draw joystick base (outer circle)
+                joy_draw_list->AddCircleFilled(joy_center, joy_radius, IM_COL32(40, 40, 40, 255));
+                joy_draw_list->AddCircle(joy_center, joy_radius, IM_COL32(100, 100, 100, 255), 32, 2.0f);
+
+                // Draw crosshair
+                joy_draw_list->AddLine(ImVec2(joy_center.x - joy_radius, joy_center.y),
+                                       ImVec2(joy_center.x + joy_radius, joy_center.y),
+                                       IM_COL32(80, 80, 80, 255), 1.0f);
+                joy_draw_list->AddLine(ImVec2(joy_center.x, joy_center.y - joy_radius),
+                                       ImVec2(joy_center.x, joy_center.y + joy_radius),
+                                       IM_COL32(80, 80, 80, 255), 1.0f);
+
+                // Handle joystick interaction
+                ImGui::SetCursorScreenPos(joy_canvas_pos);
+                ImGui::InvisibleButton("joystick", joy_canvas_size);
+                bool is_joystick_active = ImGui::IsItemActive();
+
+                if (is_joystick_active) {
+                    ImVec2 mouse_pos = ImGui::GetIO().MousePos;
+                    float dx = mouse_pos.x - joy_center.x;
+                    float dy = mouse_pos.y - joy_center.y;
+
+                    // Apply axis lock
+                    if (axis_lock == 1) dx = 0.0f; // Forward only (Y axis)
+                    if (axis_lock == 2) dy = 0.0f; // Turn only (X axis)
+
+                    // Clamp to circle
+                    float dist = sqrt(dx * dx + dy * dy);
+                    if (dist > joy_radius) {
+                        dx = (dx / dist) * joy_radius;
+                        dy = (dy / dist) * joy_radius;
+                    }
+
+                    // Convert to joystick values (-100 to +100)
+                    joy_turn = (dx / joy_radius) * 100.0f;
+                    joy_forward = -(dy / joy_radius) * 100.0f; // Negative because Y is inverted
+                } else {
+                    // Spring return to center
+                    joy_forward *= 0.85f; // Smooth return
+                    joy_turn *= 0.85f;
+                    if (fabs(joy_forward) < 1.0f) joy_forward = 0.0f;
+                    if (fabs(joy_turn) < 1.0f) joy_turn = 0.0f;
+                }
+
+                // Calculate stick position
+                float stick_x = joy_center.x + (joy_turn / 100.0f) * joy_radius;
+                float stick_y = joy_center.y - (joy_forward / 100.0f) * joy_radius;
+
+                // Draw stick position
+                float stick_radius = 15.0f;
+                ImU32 stick_color = is_joystick_active ? IM_COL32(100, 200, 255, 255) : IM_COL32(150, 150, 150, 255);
+                joy_draw_list->AddCircleFilled(ImVec2(stick_x, stick_y), stick_radius, stick_color);
+                joy_draw_list->AddCircle(ImVec2(stick_x, stick_y), stick_radius, IM_COL32(200, 200, 200, 255), 16, 2.0f);
+
+                // Draw line from center to stick
+                joy_draw_list->AddLine(joy_center, ImVec2(stick_x, stick_y), IM_COL32(150, 150, 150, 200), 2.0f);
+
+                ImGui::SetCursorScreenPos(ImVec2(joy_canvas_pos.x, joy_canvas_pos.y + joy_canvas_size.y + 5));
+
+                // Display values
+                ImGui::Text("Forward: %.1f", joy_forward);
+                ImGui::Text("Turn:    %.1f", joy_turn);
+
+                // Quick preset buttons
+                if (ImGui::Button("Reset to Center")) { joy_forward = 0.0f; joy_turn = 0.0f; }
+
+                // Scale joystick to valve current range (±1000 mA)
+                // Joystick is -100 to +100, valve expects -1000 to +1000 mA
+                float forward_cmd = joy_forward * 10.0f;  // Convert to ±1000 mA
+                float turn_cmd = joy_turn * 10.0f;        // Convert to ±1000 mA
+
+                track_sim_set_input(&track_sim, forward_cmd, turn_cmd, enable_input);
+
+                ImGui::Spacing();
+                ImGui::Separator();
+                ImGui::Text("PID CONFIGURATION");
+                ImGui::Separator();
+
+                // PID enable
+                bool pid_enabled = track_sim.pid_config.enable;
+                if (ImGui::Checkbox("Enable PID Straight Tracking", &pid_enabled)) {
+                    track_sim_enable_pid(&track_sim, pid_enabled);
+                }
+
+                // PID gains
+                static float kp = track_sim.pid_config.kp;
+                static float ki = track_sim.pid_config.ki;
+                static float kd = track_sim.pid_config.kd;
+
+                ImGui::SliderFloat("Kp (Proportional)", &kp, 0.0f, 10000.0f, "%.0f");
+                ImGui::SliderFloat("Ki (Integral)", &ki, 0.0f, 10000.0f, "%.0f");
+                ImGui::SliderFloat("Kd (Derivative)", &kd, 0.0f, 10000.0f, "%.0f");
+
+                track_sim_set_pid_gains(&track_sim, kp, ki, kd);
+
+                // PID output display
+                if (track_sim.pid_config.enable) {
+                    ImGui::Text("PID Output: %.2f", track_sim.pid.output);
+                    ImGui::Text("  P: %.2f, I: %.2f, D: %.2f",
+                        track_sim.pid.p_term, track_sim.pid.i_term, track_sim.pid.d_term);
+                }
+
+                ImGui::Spacing();
+                ImGui::Separator();
+                ImGui::Text("SYSTEM ASYMMETRIES");
+                ImGui::Separator();
+
+                // Asymmetry injection
+                static float left_eff = 1.0f;
+                static float right_eff = 1.0f;
+
+                ImGui::SliderFloat("Left Efficiency", &left_eff, 0.7f, 1.3f, "%.2f");
+                ImGui::SliderFloat("Right Efficiency", &right_eff, 0.7f, 1.3f, "%.2f");
+
+                if (ImGui::Button("Reset to Symmetric")) {
+                    left_eff = 1.0f;
+                    right_eff = 1.0f;
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Inject 10% L/R Mismatch")) {
+                    left_eff = 0.95f;
+                    right_eff = 1.05f;
+                }
+
+                track_sim_set_asymmetry(&track_sim, left_eff, right_eff);
+
+                ImGui::Spacing();
+                ImGui::Separator();
+                ImGui::Text("SIMULATION CONTROLS");
+                ImGui::Separator();
+
+                if (ImGui::Button("Reset Simulation")) {
+                    track_sim_reset(&track_sim);
+                    track_sim_set_pid_gains(&track_sim, kp, ki, kd);
+                    track_sim_enable_pid(&track_sim, pid_enabled);
+                    track_sim_set_asymmetry(&track_sim, left_eff, right_eff);
+                }
+
+                // Logging controls
+                ImGui::Spacing();
+                if (!logging_enabled) {
+                    if (ImGui::Button("Start Logging (for AI debug)")) {
+                        log_file = fopen("track_sim_log.csv", "w");
+                        if (log_file) {
+                            logging_enabled = true;
+                            log_frame_counter = 0;
+                            // Write header
+                            fprintf(log_file, "frame,sim_time,fwd_cmd,turn_cmd,left_valve_mA,right_valve_mA,left_valve_pos,right_valve_pos,left_flow,right_flow,left_rpm,right_rpm,left_vel,right_vel,heading,pid_out,pid_error,pid_p,pid_i,pid_d,left_eff\n");
+                            fflush(log_file);
+                        }
+                    }
+                } else {
+                    if (ImGui::Button("Stop Logging")) {
+                        if (log_file) {
+                            fclose(log_file);
+                            log_file = nullptr;
+                        }
+                        logging_enabled = false;
+                    }
+                    ImGui::Text("Logging: %d frames", log_frame_counter);
+                }
+
+                // ===== COLUMN 2: SENSOR READINGS =====
+                ImGui::NextColumn();
+                ImGui::SetCursorPosY(ImGui::GetCursorStartPos().y);
+
+                ImGui::Text("SENSOR READINGS");
+                ImGui::Separator();
+
+                // Speed sensors
+                ImGui::Text("SPEED SENSORS");
+                ImGui::Text("  Left Track:  %.1f RPM | %.2f m/s",
+                    track_sim.speed_sensors.left_track_rpm,
+                    track_sim.speed_sensors.left_ground_speed);
+                ImGui::Text("  Right Track: %.1f RPM | %.2f m/s",
+                    track_sim.speed_sensors.right_track_rpm,
+                    track_sim.speed_sensors.right_ground_speed);
+
+                float speed_diff = track_sim_get_speed_difference(&track_sim);
+                ImGui::Text("  Speed Diff:  %.3f m/s", speed_diff);
+
+                ImGui::Spacing();
+
+                // Pressure sensors
+                ImGui::Text("PRESSURE SENSORS");
+                ImGui::Text("  System:      %.1f bar", track_sim.pressure_sensors.system_pressure);
+                ImGui::Text("  Left Motor:  %.1f bar", track_sim.pressure_sensors.left_motor_pressure);
+                ImGui::Text("  Right Motor: %.1f bar", track_sim.pressure_sensors.right_motor_pressure);
+
+                ImGui::Spacing();
+
+                // Flow sensors
+                ImGui::Text("FLOW SENSORS");
+                ImGui::Text("  Left Motor:  %.1f L/min", track_sim.flow_sensors.left_motor_flow);
+                ImGui::Text("  Right Motor: %.1f L/min", track_sim.flow_sensors.right_motor_flow);
+                ImGui::Text("  Pump Flow:   %.1f L/min", track_sim.flow_sensors.pump_flow);
+
+                ImGui::Spacing();
+
+                // Temperature sensors
+                ImGui::Text("TEMPERATURE SENSORS");
+                ImGui::Text("  Hydraulic Oil: %.1f C", track_sim.temp_sensors.hydraulic_oil_temp);
+                ImGui::Text("  Left Motor:    %.1f C", track_sim.temp_sensors.left_motor_temp);
+                ImGui::Text("  Right Motor:   %.1f C", track_sim.temp_sensors.right_motor_temp);
+
+                // ===== COLUMN 3: VEHICLE STATE & VISUALIZATION =====
+                ImGui::NextColumn();
+                ImGui::SetCursorPosY(ImGui::GetCursorStartPos().y);
+
+                ImGui::Text("VEHICLE STATE");
+                ImGui::Separator();
+
+                float heading = track_sim.vehicle_sensors.heading;
+
+                // Calculate instantaneous heading from track speeds
+                float left_speed_inst = track_sim.speed_sensors.left_ground_speed;
+                float right_speed_inst = track_sim.speed_sensors.right_ground_speed;
+                float avg_speed_inst = (left_speed_inst + right_speed_inst) / 2.0f;
+                float turn_component_inst = (left_speed_inst - right_speed_inst) / 2.0f;
+                float instant_heading_rad = atan2(turn_component_inst, avg_speed_inst);
+                float instant_heading_deg = instant_heading_rad * (180.0f / 3.14159f);
+
+                // Display both headings
+                ImGui::Text("Cumulative Heading: %.2f deg", heading);
+                ImGui::Text("Instantaneous Heading: %.2f deg", instant_heading_deg);
+                ImGui::Text("Heading Rate: %.2f deg/s", track_sim.vehicle_sensors.heading_rate);
+                ImGui::Text("Ground Speed: %.2f m/s", track_sim.vehicle_sensors.ground_speed);
+                ImGui::Text("Distance: %.1f m", track_sim.vehicle_sensors.travel_distance);
+
+                // Heading indicator (visual)
+                ImGui::Spacing();
+                ImGui::Text("Heading Indicator:");
+                ImVec2 canvas_pos = ImGui::GetCursorScreenPos();
+                ImVec2 canvas_size = ImVec2(200, 200);
+                ImDrawList* draw_list = ImGui::GetWindowDrawList();
+
+                ImVec2 center = ImVec2(canvas_pos.x + canvas_size.x * 0.5f, canvas_pos.y + canvas_size.y * 0.5f);
+                float radius = 80.0f;
+
+                // Draw circle
+                draw_list->AddCircle(center, radius, IM_COL32(100, 100, 100, 255), 32, 2.0f);
+
+                // Draw center line (straight ahead reference)
+                draw_list->AddLine(
+                    ImVec2(center.x, center.y - radius),
+                    ImVec2(center.x, center.y - radius + 20),
+                    IM_COL32(0, 255, 0, 255), 3.0f);
+
+                // Draw heading arrow
+                float heading_rad = heading * (3.14159f / 180.0f);
+                ImVec2 arrow_end = ImVec2(
+                    center.x + radius * 0.8f * sin(heading_rad),
+                    center.y - radius * 0.8f * cos(heading_rad));
+
+                ImU32 arrow_color = fabs(heading) > 5.0f ? IM_COL32(255, 0, 0, 255) : IM_COL32(0, 255, 0, 255);
+                draw_list->AddLine(center, arrow_end, arrow_color, 4.0f);
+
+                // Draw arrowhead
+                float arrow_size = 10.0f;
+                ImVec2 arrow_dir = ImVec2(arrow_end.x - center.x, arrow_end.y - center.y);
+                float arrow_len = sqrt(arrow_dir.x * arrow_dir.x + arrow_dir.y * arrow_dir.y);
+                if (arrow_len > 0.001f) {
+                    arrow_dir.x /= arrow_len;
+                    arrow_dir.y /= arrow_len;
+                    ImVec2 perp = ImVec2(-arrow_dir.y, arrow_dir.x);
+                    draw_list->AddTriangleFilled(
+                        arrow_end,
+                        ImVec2(arrow_end.x - arrow_dir.x * arrow_size + perp.x * arrow_size * 0.5f,
+                               arrow_end.y - arrow_dir.y * arrow_size + perp.y * arrow_size * 0.5f),
+                        ImVec2(arrow_end.x - arrow_dir.x * arrow_size - perp.x * arrow_size * 0.5f,
+                               arrow_end.y - arrow_dir.y * arrow_size - perp.y * arrow_size * 0.5f),
+                        arrow_color);
+                }
+
+                // Draw instantaneous direction indicator (triangle on border)
+                // Calculate instantaneous direction from current track speeds (inverse of joystick mapping)
+                float left_speed = track_sim.speed_sensors.left_ground_speed;
+                float right_speed = track_sim.speed_sensors.right_ground_speed;
+
+                // Inverse of ISO-S mapping: left/right speeds → forward/turn components
+                float avg_speed = (left_speed + right_speed) / 2.0f;      // Forward component
+                float turn_component = (left_speed - right_speed) / 2.0f; // Turn component (+ = right turn)
+
+                // Calculate angle: atan2(turn, forward) gives instantaneous direction
+                // Examples: both 100% fwd → 0°, left 100% right 0% → 45°, left 100% right -100% → 90°
+                float instant_angle_rad = atan2(turn_component, avg_speed);
+
+                // If both tracks stopped, keep previous angle (or default to 0)
+                if (fabs(left_speed) < 0.01f && fabs(right_speed) < 0.01f) {
+                    instant_angle_rad = 0.0f;
+                }
+
+                // Position on border (outer edge of circle)
+                ImVec2 border_pos = ImVec2(
+                    center.x + radius * sin(instant_angle_rad),
+                    center.y - radius * cos(instant_angle_rad));
+
+                // Direction vector pointing inward (toward center)
+                ImVec2 inward_dir = ImVec2(center.x - border_pos.x, center.y - border_pos.y);
+                float inward_len = sqrt(inward_dir.x * inward_dir.x + inward_dir.y * inward_dir.y);
+                if (inward_len > 0.001f) {
+                    inward_dir.x /= inward_len;
+                    inward_dir.y /= inward_len;
+                }
+
+                // Triangle pointing inward from border
+                float tri_size = 12.0f;
+                ImVec2 tri_perp = ImVec2(-inward_dir.y, inward_dir.x);
+                ImVec2 tri_tip = ImVec2(
+                    border_pos.x + inward_dir.x * tri_size,
+                    border_pos.y + inward_dir.y * tri_size);
+                ImVec2 tri_left = ImVec2(
+                    border_pos.x + tri_perp.x * tri_size * 0.4f,
+                    border_pos.y + tri_perp.y * tri_size * 0.4f);
+                ImVec2 tri_right = ImVec2(
+                    border_pos.x - tri_perp.x * tri_size * 0.4f,
+                    border_pos.y - tri_perp.y * tri_size * 0.4f);
+
+                // Draw triangle (cyan/blue color to distinguish from heading arrow)
+                ImU32 instant_color = IM_COL32(0, 200, 255, 255); // Cyan
+                draw_list->AddTriangleFilled(tri_tip, tri_left, tri_right, instant_color);
+                draw_list->AddTriangle(tri_tip, tri_left, tri_right, IM_COL32(255, 255, 255, 255), 1.5f);
+
+                ImGui::Dummy(canvas_size);
+
+                // Track speed bars
+                ImGui::Spacing();
+                ImGui::Text("Track Speeds:");
+
+                // Show speed as 0-100% with direction indicator
+                // (left_speed and right_speed already declared above for instantaneous direction)
+                float max_speed = 3.0f; // Assume max ~3 m/s for display scaling
+
+                float left_speed_pct = fabs(left_speed) / max_speed;
+                float right_speed_pct = fabs(right_speed) / max_speed;
+
+                // Color based on direction
+                ImVec4 left_color = left_speed >= 0 ? ImVec4(0.2f, 0.8f, 0.2f, 1.0f) : ImVec4(0.8f, 0.4f, 0.2f, 1.0f);
+                ImVec4 right_color = right_speed >= 0 ? ImVec4(0.2f, 0.8f, 0.2f, 1.0f) : ImVec4(0.8f, 0.4f, 0.2f, 1.0f);
+
+                ImGui::Text("L %s:", left_speed >= 0 ? "FWD" : "REV"); ImGui::SameLine();
+                ImGui::PushStyleColor(ImGuiCol_PlotHistogram, left_color);
+                ImGui::ProgressBar(left_speed_pct, ImVec2(120, 20));
+                ImGui::PopStyleColor();
+
+                ImGui::Text("R %s:", right_speed >= 0 ? "FWD" : "REV"); ImGui::SameLine();
+                ImGui::PushStyleColor(ImGuiCol_PlotHistogram, right_color);
+                ImGui::ProgressBar(right_speed_pct, ImVec2(120, 20));
+                ImGui::PopStyleColor();
+
+                ImGui::Columns(1);
                 ImGui::End();
             }
 
